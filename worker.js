@@ -32,48 +32,90 @@ async function googleTranslate(text, target='id', source='auto') {
   throw new Error('Google format');
 }
 async function myMemoryTranslate(text, target='id', source='auto') {
-  // Gratis, no key, limit 5k hari - fallback saat Google 429
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${source}|${target}`;
-  const r = await fetch(url);
+  const r = await fetch(url, {headers:{'User-Agent':'Translator-Worker/1.0 Cloudflare', 'Accept':'application/json'}});
   if (!r.ok) throw new Error(`MyMemory ${r.status}`);
   const j = await r.json();
-  if (j.responseData && j.responseData.translatedText) return {translated: j.responseData.translatedText, detected: source};
+  if (j.responseData && j.responseData.translatedText) {
+    const t = j.responseData.translatedText;
+    // MyMemory kadang return WARNING atau ??? jika IP limit - anggap fail jika mengandung ?? atau WARNING
+    if (t.includes('MYMEMORY WARNING') || t.includes('INVALID SOURCE')) throw new Error('MyMemory warning');
+    if (t.trim() === text.trim()) throw new Error('MyMemory same');
+    // Jika t masih mengandung banyak ? (encoding fail) coba source lain
+    const qCount = (t.match(/\?/g)||[]).length;
+    if (qCount > text.length/2) throw new Error('MyMemory garbled');
+    return {translated: t, detected: source};
+  }
   throw new Error('MyMemory format');
 }
-async function workersAiTranslate(text, env, target='id') {
+function detectSource(text) {
+  // Heuristic untuk CJK - Taiwan pakai Traditional Chinese (zh-TW)
+  if (/[\u3040-\u309F\u30A0-\u30FF]/.test(text)) return 'ja'; // Hiragana/Katakana
+  if (/[\uAC00-\uD7AF]/.test(text)) return 'ko';
+  if (/[\u4E00-\u9FFF]/.test(text)) return 'zh'; // Han (zh-TW, zh-CN sama untuk MyMemory/AI)
+  if (/[а-яА-Я]/.test(text)) return 'ru';
+  return 'en';
+}
+async function workersAiTranslate(text, env, target='id', source='auto') {
   if (!env.AI) return null;
+  const src = source === 'auto' ? detectSource(text) : source;
   try {
-    // m2m100 gratis di Workers AI
-    const out = await env.AI.run('@cf/meta/m2m100-1.2b', {text, source_lang: 'en', target_lang: target});
-    if (out && out.translated_text) return {translated: out.translated_text, detected: 'auto'};
-    if (typeof out === 'string') return {translated: out, detected: 'auto'};
-    // fallback model lain
-    const out2 = await env.AI.run('@cf/facebook/m2m100-1.2b', {text, source_lang: 'en', target_lang: target}).catch(()=>null);
-    if (out2 && out2.translated_text) return {translated: out2.translated_text, detected: 'auto'};
-  } catch(e){ console.error('AI fail', e); }
+    const out = await env.AI.run('@cf/meta/m2m100-1.2b', {text, source_lang: src, target_lang: target});
+    if (out && out.translated_text && out.translated_text.trim() !== text.trim()) return {translated: out.translated_text, detected: src};
+    if (typeof out === 'string' && out.trim() !== text.trim()) return {translated: out, detected: src};
+  } catch(e){ console.error('AI m2m100 fail', e); }
+  try {
+    const out2 = await env.AI.run('@cf/facebook/m2m100-1.2b', {text, source_lang: src, target_lang: target});
+    if (out2 && out2.translated_text && out2.translated_text.trim() !== text.trim()) return {translated: out2.translated_text, detected: src};
+  } catch(e){ console.error('AI fb fail', e); }
   return null;
 }
 async function translateWithFallback(text, target, env) {
-  // Urutan: Google -> Workers AI -> MyMemory
-  try { return await googleTranslate(text, target, 'auto'); }
-  catch(e){
+  const src = detectSource(text);
+  // 1. Google (paling akurat, auto-detect)
+  try {
+    const g = await googleTranslate(text, target, 'auto');
+    if (g.translated.trim() !== text.trim() && !g.translated.includes('????')) return g;
+    throw new Error('Google same');
+  } catch(e){
     console.error('Google fail', String(e));
-    if (String(e).includes('429') || String(e).includes('Google')) {
-      const ai = await workersAiTranslate(text, env, target);
-      if (ai) return ai;
-      try { return await myMemoryTranslate(text, target, 'en'); } catch {}
-      // terakhir coba MyMemory auto
-      try { return await myMemoryTranslate(text, target, 'auto'); } catch {}
+    // 2. Workers AI dulu (gratis, tidak kena 429 dari Cloudflare IP, akurat untuk zh-TW)
+    const ai = await workersAiTranslate(text, env, target, src);
+    if (ai && ai.translated.trim() !== text.trim() && !ai.translated.includes('????')) {
+      console.error(`AI ${src} success`);
+      return ai;
+    }
+    // 3. MyMemory (cadangan, tapi sering 429 dari Worker IP)
+    for (const s of [src, 'zh', 'zh-TW']) {
+      try {
+        const m = await myMemoryTranslate(text, target, s);
+        if (m.translated.trim() !== text.trim()) return {...m, detected: s};
+      } catch(err){ console.error(`MyMemory ${s} fail`, String(err)); }
     }
     throw e;
   }
 }
-function flag(c){ const m={en:'🇬🇧',ko:'🇰🇷',ja:'🇯🇵',zh:'🇨🇳',ru:'🇷🇺',id:'🇮🇩'}; return m[c]||'🌐'; }
-function lang(c){ const m={en:'Inggris',ko:'Korea',ja:'Jepang',zh:'China',ru:'Rusia',id:'Indonesia'}; return m[c]||c; }
+function flag(c){ const m={en:'🇬🇧',ko:'🇰🇷',ja:'🇯🇵',zh:'🇹🇼', 'zh-TW':'🇹🇼', ru:'🇷🇺',id:'🇮🇩'}; return m[c]||'🌐'; }
+function lang(c){ const m={en:'Inggris',ko:'Korea',ja:'Jepang',zh:'Taiwan', 'zh-TW':'Taiwan', ru:'Rusia', id:'Indonesia'}; return m[c]||c; }
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === '/debug' && request.method === 'GET') {
+      const q = url.searchParams.get('q') || 'hello';
+      const lp = url.searchParams.get('lp') || 'zh|id';
+      const [s,t] = lp.split('|');
+      const mode = url.searchParams.get('mode') || 'mymemory';
+      try {
+        if (mode === 'ai') {
+          const r = await workersAiTranslate(q, env, t, s);
+          return json({ok:true, mode, lp, raw:r, q});
+        } else {
+          const r = await myMemoryTranslate(q, t, s);
+          return json({ok:true, mode, lp, raw:r, q});
+        }
+      } catch(e){ return json({ok:false, error:String(e), lp, mode},500); }
+    }
     if (url.pathname === '/translate' && request.method === 'POST') {
       try {
         const {text, target} = await request.json();
