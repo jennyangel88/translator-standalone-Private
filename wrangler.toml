@@ -1,0 +1,9 @@
+name = "translator-standalone"
+main = "worker.js"
+compatibility_date = "2024-08-31"
+
+# Cloudflare Worker 100% GRATIS - 100k req/hari, tanpa kartu kredit
+# Untuk slash /translate & context menu Translate to ID (tanpa gateway 24/7)
+
+[vars]
+# Tidak perlu env, translate pakai Google gtx gratis

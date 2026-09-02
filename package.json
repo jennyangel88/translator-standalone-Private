@@ -1,0 +1,11 @@
+{
+  "name": "translator-standalone-worker",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "register": "node register.mjs"
+  },
+  "devDependencies": { "wrangler": "^3.60.0" }
+}
