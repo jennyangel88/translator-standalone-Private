@@ -56,41 +56,72 @@ function detectSource(text) {
   if (/[а-яА-Я]/.test(text)) return 'ru';
   return 'en';
 }
+function normalizeForAI(lang) {
+  // Workers AI m2m100 hanya support code 2 huruf, zh-TW/zh-CN -> zh, id tetap id
+  if (!lang) return 'en';
+  const l = lang.toLowerCase();
+  if (l === 'zh-tw' || l === 'zh-cn' || l === 'zh') return 'zh';
+  if (l === 'id' || l === 'en' || l === 'ko' || l === 'ja' || l === 'ru') return l;
+  return l.split('-')[0];
+}
 async function workersAiTranslate(text, env, target='id', source='auto') {
   if (!env.AI) return null;
-  const src = source === 'auto' ? detectSource(text) : source;
+  const srcRaw = source === 'auto' ? detectSource(text) : source;
+  const src = normalizeForAI(srcRaw);
+  const tgt = normalizeForAI(target);
+  // Coba m2m100 dulu
+  const srcTrials = src === 'en' ? ['en','id'] : [src, 'id', 'en'];
+  for (const s of srcTrials) {
+    try {
+      const out = await env.AI.run('@cf/meta/m2m100-1.2b', {text, source_lang: s, target_lang: tgt});
+      if (out && out.translated_text && out.translated_text.trim() !== text.trim() && !out.translated_text.includes('????') && (out.translated_text.match(/\?/g)||[]).length < text.length) return {translated: out.translated_text, detected: srcRaw};
+      if (typeof out === 'string' && out.trim() !== text.trim()) return {translated: out, detected: srcRaw};
+    } catch(e){ console.error('AI m2m100 fail', s+'->'+tgt, String(e).slice(0,120)); }
+  }
+  return null;
+}
+async function llamaTranslate(text, env, target) {
+  if (!env.AI) return null;
+  const targetName = {id:'Indonesian', 'zh-TW':'Traditional Chinese (Taiwan)', 'zh-CN':'Simplified Chinese', zh:'Chinese', en:'English', ko:'Korean', ja:'Japanese'}[target] || target;
+  const prompt = `Translate the following text to ${targetName}. Only output the translation, no explanation.\nText: "${text}"\nTranslation:`;
   try {
-    const out = await env.AI.run('@cf/meta/m2m100-1.2b', {text, source_lang: src, target_lang: target});
-    if (out && out.translated_text && out.translated_text.trim() !== text.trim()) return {translated: out.translated_text, detected: src};
-    if (typeof out === 'string' && out.trim() !== text.trim()) return {translated: out, detected: src};
-  } catch(e){ console.error('AI m2m100 fail', e); }
-  try {
-    const out2 = await env.AI.run('@cf/facebook/m2m100-1.2b', {text, source_lang: src, target_lang: target});
-    if (out2 && out2.translated_text && out2.translated_text.trim() !== text.trim()) return {translated: out2.translated_text, detected: src};
-  } catch(e){ console.error('AI fb fail', e); }
+    const out = await env.AI.run('@cf/meta/llama-3-8b-instruct', {prompt, max_tokens: 300});
+    let t = out.response || out.result || out.text || '';
+    if (typeof t === 'string') t = t.trim().replace(/^["']|["']$/g,'');
+    // Bersihkan jika model ngasih penjelasan
+    if (t.includes('Translation:')) t = t.split('Translation:').pop().trim();
+    if (t && t !== text && t.length > 1 && !t.includes('????')) return {translated: t, detected: 'auto'};
+  } catch(e){ console.error('Llama fail', String(e).slice(0,150)); }
   return null;
 }
 async function translateWithFallback(text, target, env) {
-  const src = detectSource(text);
-  // 1. Google (paling akurat, auto-detect)
+  // Normalisasi target untuk Google (Google butuh zh-TW/zh-CN, AI butuh zh)
+  const targetForGoogle = target;
+  // 1. Google auto -> target
   try {
-    const g = await googleTranslate(text, target, 'auto');
+    const g = await googleTranslate(text, targetForGoogle, 'auto');
     if (g.translated.trim() !== text.trim() && !g.translated.includes('????')) return g;
     throw new Error('Google same');
   } catch(e){
     console.error('Google fail', String(e));
-    // 2. Workers AI dulu (gratis, tidak kena 429 dari Cloudflare IP, akurat untuk zh-TW)
-    const ai = await workersAiTranslate(text, env, target, src);
-    if (ai && ai.translated.trim() !== text.trim() && !ai.translated.includes('????')) {
-      console.error(`AI ${src} success`);
-      return ai;
-    }
-    // 3. MyMemory (cadangan, tapi sering 429 dari Worker IP)
-    for (const s of [src, 'zh', 'zh-TW']) {
-      try {
-        const m = await myMemoryTranslate(text, target, s);
-        if (m.translated.trim() !== text.trim()) return {...m, detected: s};
-      } catch(err){ console.error(`MyMemory ${s} fail`, String(err)); }
+    // Jika 429, fallback ke AI & Llama (tidak kena rate limit Cloudflare IP)
+    if (String(e).includes('429') || String(e).includes('Google') || String(e).includes('same')) {
+      const ai = await workersAiTranslate(text, env, target, 'auto');
+      if (ai && ai.translated.trim() !== text.trim() && !ai.translated.includes('????') && (ai.translated.match(/\?/g)||[]).length < 3) {
+        console.error(`AI m2m100 success`);
+        return ai;
+      }
+      const llama = await llamaTranslate(text, env, target);
+      if (llama) {
+        console.error(`Llama success`);
+        return llama;
+      }
+      for (const s of ['zh', 'zh-TW', 'zh-CN', 'en', 'id']) {
+        try {
+          const m = await myMemoryTranslate(text, targetForGoogle, s);
+          if (m.translated.trim() !== text.trim()) return {...m, detected: s};
+        } catch(err){ console.error(`MyMemory ${s} fail`, String(err)); }
+      }
     }
     throw e;
   }
@@ -155,14 +186,17 @@ export default {
               else result = {embeds:[{title:`${flag(r.detected)} ${lang(r.detected)} → ${flag(target)} ${lang(target)}`, description:`**Asli:** ${text.slice(0,1200)}\n\n**Terjemahan:** ${r.translated.slice(0,1200)}`, color:0x3498db, footer:{text:`Auto-detect: ${r.detected} • fallback gratis`}}]};
             } catch(e){ result = {embeds:[{title:'❌ Gagal', description:String(e) + '\nCoba lagi 5 detik, Google limit 429 ter-trigger.', color:0xe74c3c}], flags:64}; }
           }
-        } else if (name === 'Translate to ID') {
+        } else if (name.startsWith('Translate to')) {
+          // Generic handler untuk Translate to ID/EN/TW/CN -> map ke target code
+          const targetMap = {'Translate to ID':'id','Translate to EN':'en','Translate to TW':'zh-TW','Translate to CN':'zh-CN','Translate to ZH':'zh-CN'};
+          const target = targetMap[name] || 'id';
           const text = msgText;
           if (!text) result = {content:'Tidak ada teks', flags:64};
           else {
             try {
-              const r = await translateWithFallback(text, 'id', env);
-              if (r.detected === 'id') result = {embeds:[{title:'🇮🇩 Sudah Indonesia', description:`\`\`\`${text.slice(0,1500)}\`\`\``, color:0x2ecc71}], flags:64};
-              else result = {embeds:[{title:`${flag(r.detected)} ${lang(r.detected)} → 🇮🇩 Indonesia`, description:`**Asli:** ${text.slice(0,1000)}\n\n**Terjemahan:** ${r.translated.slice(0,1000)}`, color:0x3498db, footer:{text:`Auto-detect: ${r.detected}`}}]};
+              const r = await translateWithFallback(text, target, env);
+              if (r.detected === target || r.detected === target.split('-')[0]) result = {embeds:[{title:`${flag(target)} Sudah ${lang(target)}`, description:`\`\`\`${text.slice(0,1500)}\`\`\``, color:0x2ecc71}], flags:64};
+              else result = {embeds:[{title:`${flag(r.detected)} ${lang(r.detected)} → ${flag(target)} ${lang(target)}`, description:`**Asli:** ${text.slice(0,1000)}\n\n**Terjemahan:** ${r.translated.slice(0,1000)}`, color:0x3498db, footer:{text:`Auto-detect: ${r.detected}`}}]};
             } catch(e){ result = {embeds:[{title:'❌ Gagal', description:String(e), color:0xe74c3c}], flags:64}; }
           }
         } else if (name === 'autotranslate') {
