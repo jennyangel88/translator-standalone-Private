@@ -95,8 +95,8 @@ async function translateWithFallback(text, target, env) {
     throw e;
   }
 }
-function flag(c){ const m={en:'🇬🇧',ko:'🇰🇷',ja:'🇯🇵',zh:'🇹🇼', 'zh-TW':'🇹🇼', ru:'🇷🇺',id:'🇮🇩'}; return m[c]||'🌐'; }
-function lang(c){ const m={en:'Inggris',ko:'Korea',ja:'Jepang',zh:'Taiwan', 'zh-TW':'Taiwan', ru:'Rusia', id:'Indonesia'}; return m[c]||c; }
+function flag(c){ const m={en:'🇬🇧',ko:'🇰🇷',ja:'🇯🇵',zh:'🇹🇼', 'zh-TW':'🇹🇼', 'zh-CN':'🇨🇳', ru:'🇷🇺',id:'🇮🇩'}; return m[c]||'🌐'; }
+function lang(c){ const m={en:'Inggris',ko:'Korea',ja:'Jepang',zh:'Taiwan', 'zh-TW':'Taiwan', 'zh-CN':'China', ru:'Rusia', id:'Indonesia', 'zh-CN':'China'}; return m[c]||c; }
 
 export default {
   async fetch(request, env, ctx) {

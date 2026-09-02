@@ -64,10 +64,10 @@ async def translate_via_worker(text, target="id"):
     return None
 
 def lang_flag(code):
-    m={"en":"🇬🇧","ko":"🇰🇷","ja":"🇯🇵","zh":"🇨🇳","ru":"🇷🇺","ar":"🇸🇦","th":"🇹🇭","vi":"🇻🇳","tr":"🇹🇷","fr":"🇫🇷","de":"🇩🇪","es":"🇪🇸","pt":"🇵🇹","id":"🇮🇩"}
+    m={"en":"🇬🇧","ko":"🇰🇷","ja":"🇯🇵","zh":"🇹🇼","zh-TW":"🇹🇼","zh-CN":"🇨🇳","ru":"🇷🇺","ar":"🇸🇦","th":"🇹🇭","vi":"🇻🇳","tr":"🇹🇷","fr":"🇫🇷","de":"🇩🇪","es":"🇪🇸","pt":"🇵🇹","id":"🇮🇩"}
     return m.get(code,"🌐")
 def lang_name(code):
-    m={"en":"Inggris","ko":"Korea","ja":"Jepang","zh":"China","ru":"Rusia","ar":"Arab","th":"Thailand","vi":"Vietnam","tr":"Turki","fr":"Perancis","de":"Jerman","es":"Spanyol","pt":"Portugis","id":"Indonesia"}
+    m={"en":"Inggris","ko":"Korea","ja":"Jepang","zh":"China","zh-TW":"Taiwan","zh-CN":"China","ru":"Rusia","ar":"Arab","th":"Thailand","vi":"Vietnam","tr":"Turki","fr":"Perancis","de":"Jerman","es":"Spanyol","pt":"Portugis","id":"Indonesia"}
     return m.get(code, code)
 
 # -------- Slash commands --------
@@ -87,13 +87,15 @@ async def on_ready():
         print(f"[sync err] {e}")
     print("[Translator] Siap! /translate | mention @bot + teks | autotranslate channel")
 
-@bot.tree.command(name="translate", description="Auto-detect bahasa → translate ke Indonesia")
-@app_commands.describe(text="Teks apapun", target="Target (default Indonesia)")
+@bot.tree.command(name="translate", description="Auto-detect bahasa → translate ke target")
+@app_commands.describe(text="Teks apapun (auto-detect)", target="Target (default Indonesia)")
 @app_commands.choices(target=[
-    app_commands.Choice(name="Indonesia", value="id"),
-    app_commands.Choice(name="English", value="en"),
-    app_commands.Choice(name="Korea", value="ko"),
-    app_commands.Choice(name="Jepang", value="ja"),
+    app_commands.Choice(name="Indonesia 🇮🇩", value="id"),
+    app_commands.Choice(name="English 🇬🇧", value="en"),
+    app_commands.Choice(name="Taiwan 🇹🇼", value="zh-TW"),
+    app_commands.Choice(name="China 🇨🇳", value="zh-CN"),
+    app_commands.Choice(name="Korea 🇰🇷", value="ko"),
+    app_commands.Choice(name="Jepang 🇯🇵", value="ja"),
 ])
 async def translate_cmd(interaction: discord.Interaction, text: str, target: str = "id"):
     await interaction.response.defer()
