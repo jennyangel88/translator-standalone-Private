@@ -31,14 +31,59 @@ async function googleTranslate(text, target='id', source='auto') {
   if (Array.isArray(j)) return {translated: j[0].map(x=>x[0]).join(''), detected: j[2]||source};
   throw new Error('Google format');
 }
+async function myMemoryTranslate(text, target='id', source='auto') {
+  // Gratis, no key, limit 5k hari - fallback saat Google 429
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${source}|${target}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`MyMemory ${r.status}`);
+  const j = await r.json();
+  if (j.responseData && j.responseData.translatedText) return {translated: j.responseData.translatedText, detected: source};
+  throw new Error('MyMemory format');
+}
+async function workersAiTranslate(text, env, target='id') {
+  if (!env.AI) return null;
+  try {
+    // m2m100 gratis di Workers AI
+    const out = await env.AI.run('@cf/meta/m2m100-1.2b', {text, source_lang: 'en', target_lang: target});
+    if (out && out.translated_text) return {translated: out.translated_text, detected: 'auto'};
+    if (typeof out === 'string') return {translated: out, detected: 'auto'};
+    // fallback model lain
+    const out2 = await env.AI.run('@cf/facebook/m2m100-1.2b', {text, source_lang: 'en', target_lang: target}).catch(()=>null);
+    if (out2 && out2.translated_text) return {translated: out2.translated_text, detected: 'auto'};
+  } catch(e){ console.error('AI fail', e); }
+  return null;
+}
+async function translateWithFallback(text, target, env) {
+  // Urutan: Google -> Workers AI -> MyMemory
+  try { return await googleTranslate(text, target, 'auto'); }
+  catch(e){
+    console.error('Google fail', String(e));
+    if (String(e).includes('429') || String(e).includes('Google')) {
+      const ai = await workersAiTranslate(text, env, target);
+      if (ai) return ai;
+      try { return await myMemoryTranslate(text, target, 'en'); } catch {}
+      // terakhir coba MyMemory auto
+      try { return await myMemoryTranslate(text, target, 'auto'); } catch {}
+    }
+    throw e;
+  }
+}
 function flag(c){ const m={en:'🇬🇧',ko:'🇰🇷',ja:'🇯🇵',zh:'🇨🇳',ru:'🇷🇺',id:'🇮🇩'}; return m[c]||'🌐'; }
 function lang(c){ const m={en:'Inggris',ko:'Korea',ja:'Jepang',zh:'China',ru:'Rusia',id:'Indonesia'}; return m[c]||c; }
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === '/translate' && request.method === 'POST') {
+      try {
+        const {text, target} = await request.json();
+        if (!text) return json({error:'text required'},400);
+        const r = await translateWithFallback(text, target||'id', env);
+        return json(r);
+      } catch(e){ return json({error:String(e)},500); }
+    }
     if (url.pathname === '/' && request.method === 'GET') {
-      return new Response(JSON.stringify({ok:true, service:'translator-standalone', free:'Cloudflare Worker', endpoints:'/interactions'}), {headers:{'content-type':'application/json'}});
+      return new Response(JSON.stringify({ok:true, service:'translator-standalone', free:'Cloudflare Worker', endpoints:'/interactions, /translate'}), {headers:{'content-type':'application/json'}});
     }
     if (url.pathname === '/interactions' && request.method === 'POST') {
       if (env.DISCORD_PUBLIC_KEY) {
@@ -63,19 +108,19 @@ export default {
           if (!text) result = {content:'Kirim teks yang mau diterjemahkan', flags:64};
           else {
             try {
-              const r = await googleTranslate(text, target, 'auto');
+              const r = await translateWithFallback(text, target, env);
               if (r.detected === target) result = {embeds:[{title:`${flag(target)} Sudah ${lang(target)}`, description:`\`\`\`${text.slice(0,1500)}\`\`\``, color:0x2ecc71}]};
-              else result = {embeds:[{title:`${flag(r.detected)} ${lang(r.detected)} → ${flag(target)} ${lang(target)}`, description:`**Asli:** ${text.slice(0,1200)}\n\n**Terjemahan:** ${r.translated.slice(0,1200)}`, color:0x3498db, footer:{text:`Auto-detect: ${r.detected}`}}]};
-            } catch(e){ result = {embeds:[{title:'❌ Gagal', description:String(e), color:0xe74c3c}], flags:64}; }
+              else result = {embeds:[{title:`${flag(r.detected)} ${lang(r.detected)} → ${flag(target)} ${lang(target)}`, description:`**Asli:** ${text.slice(0,1200)}\n\n**Terjemahan:** ${r.translated.slice(0,1200)}`, color:0x3498db, footer:{text:`Auto-detect: ${r.detected} • fallback gratis`}}]};
+            } catch(e){ result = {embeds:[{title:'❌ Gagal', description:String(e) + '\nCoba lagi 5 detik, Google limit 429 ter-trigger.', color:0xe74c3c}], flags:64}; }
           }
         } else if (name === 'Translate to ID') {
           const text = msgText;
           if (!text) result = {content:'Tidak ada teks', flags:64};
           else {
             try {
-              const r = await googleTranslate(text, 'id', 'auto');
+              const r = await translateWithFallback(text, 'id', env);
               if (r.detected === 'id') result = {embeds:[{title:'🇮🇩 Sudah Indonesia', description:`\`\`\`${text.slice(0,1500)}\`\`\``, color:0x2ecc71}], flags:64};
-              else result = {embeds:[{title:`${flag(r.detected)} ${lang(r.detected)} → 🇮🇩 Indonesia`, description:`**Asli:** ${text.slice(0,1000)}\n\n**Terjemahan:** ${r.translated.slice(0,1000)}`, color:0x3498db}]};
+              else result = {embeds:[{title:`${flag(r.detected)} ${lang(r.detected)} → 🇮🇩 Indonesia`, description:`**Asli:** ${text.slice(0,1000)}\n\n**Terjemahan:** ${r.translated.slice(0,1000)}`, color:0x3498db, footer:{text:`Auto-detect: ${r.detected}`}}]};
             } catch(e){ result = {embeds:[{title:'❌ Gagal', description:String(e), color:0xe74c3c}], flags:64}; }
           }
         } else if (name === 'autotranslate') {
