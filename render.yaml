@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: translator-standalone
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false # isi di Render Dashboard → Environment
+      - key: GUILD_ID
+        value: 1325784831870636114
